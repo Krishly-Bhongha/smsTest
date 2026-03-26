@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sim.exchange import OrderType, Side
 from sim.news import NewsEvent
@@ -84,11 +84,11 @@ class Strategy(ABC):
     """
 
     @abstractmethod
-    def act(self, observation: Observation) -> List[OrderRequest]:
-        """Generate orders based on the observation.
+    def act(self, observations: Dict[str, Observation]) -> List[OrderRequest]:
+        """Generate orders based on observations across all traded commodities.
 
         Args:
-            observation: Current market observation
+            observations: Dict mapping commodity name -> Observation
 
         Returns:
             List of order requests to submit
@@ -122,7 +122,7 @@ class EmptyStrategy(Strategy):
     Useful as a placeholder or for testing.
     """
 
-    def act(self, observation: Observation) -> List[OrderRequest]:
+    def act(self, observations: Dict[str, Observation]) -> List[OrderRequest]:
         """Return no orders."""
         return []
 
@@ -140,46 +140,49 @@ class RandomStrategy(Strategy):
         self._random = random.Random(seed)
         self._latest_news: Optional[NewsEvent] = None
 
-    def act(self, observation: Observation) -> List[OrderRequest]:
-        """Generate random orders."""
-        # Use reference_price as fallback when midprice is unavailable
-        midprice = observation.midprice
-        if midprice is None:
-            midprice = observation.reference_price
-        if midprice is None:
-            return []
+    def act(self, observations: Dict[str, Observation]) -> List[OrderRequest]:
+        """Generate random orders across all observed commodities."""
+        orders = []
+        for observation in observations.values():
+            # Use reference_price as fallback when midprice is unavailable
+            midprice = observation.midprice
+            if midprice is None:
+                midprice = observation.reference_price
+            if midprice is None:
+                continue
 
-        # 20% chance to place an order each tick
-        if self._random.random() > 0.2:
-            return []
+            # 20% chance to place an order each tick per commodity
+            if self._random.random() > 0.2:
+                continue
 
-        # Random side
-        side = self._random.choice([Side.BID, Side.ASK])
-        if self._latest_news is not None and self._random.random() < abs(
-            self._latest_news.directional_bias
-        ):
-            side = Side.BID if self._latest_news.directional_bias >= 0 else Side.ASK
+            # Random side
+            side = self._random.choice([Side.BID, Side.ASK])
+            if self._latest_news is not None and self._random.random() < abs(
+                self._latest_news.directional_bias
+            ):
+                side = Side.BID if self._latest_news.directional_bias >= 0 else Side.ASK
 
-        # Random quantity
-        quantity = self._random.uniform(1, 10)
+            # Random quantity
+            quantity = self._random.uniform(1, 10)
 
-        # Random price around midprice
-        if observation.spread:
-            offset = self._random.uniform(-observation.spread, observation.spread)
-        else:
-            offset = self._random.uniform(-0.1, 0.1)
+            # Random price around midprice
+            if observation.spread:
+                offset = self._random.uniform(-observation.spread, observation.spread)
+            else:
+                offset = self._random.uniform(-0.1, 0.1)
 
-        price = midprice + offset if side == Side.BID else midprice - offset
+            price = midprice + offset if side == Side.BID else midprice - offset
 
-        return [
-            OrderRequest(
-                side=side,
-                order_type=OrderType.LIMIT,
-                quantity=quantity,
-                commodity=observation.commodity,
-                price=price,
+            orders.append(
+                OrderRequest(
+                    side=side,
+                    order_type=OrderType.LIMIT,
+                    quantity=quantity,
+                    commodity=observation.commodity,
+                    price=price,
+                )
             )
-        ]
+        return orders
 
     def on_news(self, news: Optional[NewsEvent]) -> None:
         """Store the latest news for optional use in `act`."""

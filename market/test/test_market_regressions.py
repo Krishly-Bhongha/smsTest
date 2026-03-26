@@ -114,6 +114,7 @@ class HelperApiTests(unittest.TestCase):
 
         observation = Observation(
             tick=1.0,
+            commodity="DEFAULT",
             best_bid=None,
             best_ask=None,
             midprice=None,
@@ -126,7 +127,7 @@ class HelperApiTests(unittest.TestCase):
             ask_depth=[],
         )
 
-        orders = strategy.act(observation)
+        orders = strategy.act({"DEFAULT": observation})
 
         self.assertEqual(len(orders), 1)
         self.assertAlmostEqual(orders[0].price, 100.05)

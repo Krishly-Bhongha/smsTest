@@ -7,7 +7,7 @@ random orders for testing and simulation purposes.
 from __future__ import annotations
 
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from sim.exchange import OrderType, Side
 from sim.news import NewsEvent
@@ -44,94 +44,95 @@ class RandomTraderStrategy(Strategy):
         self._random = random.Random(seed)
         self._latest_news: Optional[NewsEvent] = None
 
-    def act(self, observation: Observation) -> List[OrderRequest]:
-        """Generate random orders.
+    def act(self, observations: Dict[str, Observation]) -> List[OrderRequest]:
+        """Generate random orders across all traded commodities.
 
         Args:
-            observation: Current market observation
+            observations: Dict mapping commodity name -> Observation
 
         Returns:
             List of random order requests
         """
-        # Use reference_price as fallback when midprice is unavailable
-        midprice = observation.midprice
-        if midprice is None:
-            midprice = observation.reference_price
-        if midprice is None:
-            return []
+        orders = []
+        for observation in observations.values():
+            # Use reference_price as fallback when midprice is unavailable
+            midprice = observation.midprice
+            if midprice is None:
+                midprice = observation.reference_price
+            if midprice is None:
+                continue
 
-        activity_multiplier = (
-            self._latest_news.activity_multiplier() if self._latest_news else 1.0
-        )
-        adjusted_probability = min(1.0, self.probability * activity_multiplier)
+            activity_multiplier = (
+                self._latest_news.activity_multiplier() if self._latest_news else 1.0
+            )
+            adjusted_probability = min(1.0, self.probability * activity_multiplier)
 
-        # Random chance to place order
-        if self._random.random() > adjusted_probability:
-            return []
+            # Random chance to place order per commodity
+            if self._random.random() > adjusted_probability:
+                continue
 
-        # Random side
-        side = self._random.choice([Side.BID, Side.ASK])
-        if self._latest_news is not None and self._random.random() < min(
-            1.0, abs(self._latest_news.directional_bias)
-        ):
-            side = Side.BID if self._latest_news.directional_bias >= 0 else Side.ASK
+            # Random side
+            side = self._random.choice([Side.BID, Side.ASK])
+            if self._latest_news is not None and self._random.random() < min(
+                1.0, abs(self._latest_news.directional_bias)
+            ):
+                side = Side.BID if self._latest_news.directional_bias >= 0 else Side.ASK
 
-        quantity = max(1.0, self.order_quantity * activity_multiplier)
+            quantity = max(1.0, self.order_quantity * activity_multiplier)
 
-        if side == Side.BID and observation.cash < quantity * midprice:
-            return []
+            if side == Side.BID and observation.cash < quantity * midprice:
+                continue
 
-        # Occasionally cross the spread to ensure this trader actually interacts.
-        if (
-            observation.best_bid is not None
-            and observation.best_ask is not None
-            and self._random.random() < 0.35
-        ):
-            return [
+            # Occasionally cross the spread to ensure this trader actually interacts.
+            if (
+                observation.best_bid is not None
+                and observation.best_ask is not None
+                and self._random.random() < 0.35
+            ):
+                orders.append(
+                    OrderRequest(
+                        side=side,
+                        order_type=OrderType.MARKET,
+                        quantity=quantity,
+                        commodity=observation.commodity,
+                        price=None,
+                    )
+                )
+                continue
+
+            # Random price around midprice (within spread)
+            if observation.spread and observation.spread > 0:
+                offset = self._random.uniform(-observation.spread, observation.spread)
+            else:
+                offset = self._random.uniform(-0.1, 0.1)
+
+            news_shift = self._latest_news.price_shift(0.01) if self._latest_news else 0.0
+
+            if side == Side.BID:
+                price = midprice + offset
+                if observation.best_bid is not None:
+                    price = max(price, observation.best_bid + max(midprice * 0.0003, 0.01))
+                if observation.best_ask is not None:
+                    price = min(price, observation.best_ask - max(midprice * 0.0003, 0.01))
+                price = min(price, midprice * (1.002 + max(0.0, news_shift)))
+            else:
+                price = midprice - offset
+                if observation.best_ask is not None:
+                    price = min(price, observation.best_ask - max(midprice * 0.0003, 0.01))
+                if observation.best_bid is not None:
+                    price = max(price, observation.best_bid + max(midprice * 0.0003, 0.01))
+                price = max(price, midprice * (0.998 + max(0.0, -news_shift)))
+
+            orders.append(
                 OrderRequest(
                     side=side,
-                    order_type=OrderType.MARKET,
+                    order_type=OrderType.LIMIT,
                     quantity=quantity,
                     commodity=observation.commodity,
-                    price=None,
+                    price=price,
                 )
-            ]
-
-        # Random price around midprice (within spread)
-        if observation.spread and observation.spread > 0:
-            offset = self._random.uniform(-observation.spread, observation.spread)
-        else:
-            offset = self._random.uniform(-0.1, 0.1)
-
-        news_shift = self._latest_news.price_shift(0.01) if self._latest_news else 0.0
-
-        # For bids: lower price, for asks: higher price
-        if side == Side.BID:
-            price = midprice + offset
-            # Ensure bid is below midprice
-            if observation.best_bid is not None:
-                price = max(price, observation.best_bid + max(midprice * 0.0003, 0.01))
-            if observation.best_ask is not None:
-                price = min(price, observation.best_ask - max(midprice * 0.0003, 0.01))
-            price = min(price, midprice * (1.002 + max(0.0, news_shift)))
-        else:
-            price = midprice - offset
-            # Ensure ask is above midprice
-            if observation.best_ask is not None:
-                price = min(price, observation.best_ask - max(midprice * 0.0003, 0.01))
-            if observation.best_bid is not None:
-                price = max(price, observation.best_bid + max(midprice * 0.0003, 0.01))
-            price = max(price, midprice * (0.998 + max(0.0, -news_shift)))
-
-        return [
-            OrderRequest(
-                side=side,
-                order_type=OrderType.LIMIT,
-                quantity=quantity,
-                commodity=observation.commodity,
-                price=price,
             )
-        ]
+        return orders
 
     def on_news(self, news: Optional[NewsEvent]) -> None:
         """Store the latest news for optional calibration."""

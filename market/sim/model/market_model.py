@@ -31,7 +31,7 @@ class MarketModel(Model):
     """Market simulation model - the central orchestrator.
 
     Supports multiple commodities, each with its own independent order book
-    and market environment. Agents are each assigned one commodity.
+    and market environment. Agents can trade across multiple commodities.
 
     Responsibilities:
     - Simulation clock management
@@ -117,10 +117,9 @@ class MarketModel(Model):
         self._agents: Dict[int, TradingAgent] = {}
         self._latest_news: Optional[NewsEvent] = None
 
-        # Create agents (round-robin commodity assignment)
+        # Create agents (each trades all commodities)
         agent_params = agent_params or {}
         for i in range(num_agents):
-            commodity = self.commodities[i % len(self.commodities)]
             strategy_kwargs = dict(agent_params)
             strategy_kwargs.setdefault("seed", self.random.randrange(2**32))
             strategy = self.strategy_loader.create(agent_strategy, **strategy_kwargs)
@@ -129,7 +128,7 @@ class MarketModel(Model):
                 model=self,
                 strategy=strategy,
                 initial_cash=initial_cash,
-                commodity=commodity,
+                commodities=self.commodities,
             )
             self._agents[agent.unique_id] = agent
 
@@ -163,10 +162,7 @@ class MarketModel(Model):
             initial_spread = self._commodity_spreads[commodity]
             half = initial_spread / 2.0
 
-            # Agents assigned to this commodity
-            commodity_agents = [a for a in agents_list if a.commodity == commodity]
-            if not commodity_agents:
-                commodity_agents = agents_list  # fallback
+            commodity_agents = agents_list
 
             bid_prices = [
                 initial_price - half,
@@ -234,14 +230,14 @@ class MarketModel(Model):
         self,
         strategy: Optional[Strategy] = None,
         initial_cash: float = 10000.0,
-        commodity: Optional[str] = None,
+        commodities: Optional[List[str]] = None,
     ) -> TradingAgent:
         """Add a new trading agent.
 
         Args:
             strategy: Trading strategy (optional, uses default if None)
             initial_cash: Starting cash
-            commodity: Commodity to assign (defaults to first commodity)
+            commodities: Commodities to trade (defaults to all model commodities)
 
         Returns:
             The created agent
@@ -251,14 +247,14 @@ class MarketModel(Model):
                 "random", seed=self.random.randrange(2**32)
             )
 
-        if commodity is None:
-            commodity = self.commodities[0]
+        if commodities is None:
+            commodities = self.commodities
 
         agent = TradingAgent(
             model=self,
             strategy=strategy,
             initial_cash=initial_cash,
-            commodity=commodity,
+            commodities=commodities,
         )
         self._agents[agent.unique_id] = agent
         return agent
@@ -286,9 +282,10 @@ class MarketModel(Model):
         """Remove an agent."""
         agent = self._agents.pop(agent_id, None)
         if agent is not None:
-            ob = self.exchange.get_order_book(agent.commodity)
-            for order in ob.get_orders_for_agent(agent_id):
-                ob.remove_order(order.order_id)
+            for commodity in agent.commodities:
+                ob = self.exchange.get_order_book(commodity)
+                for order in ob.get_orders_for_agent(agent_id):
+                    ob.remove_order(order.order_id)
             agent._pending_orders.clear()
             agent.remove()
 
@@ -353,7 +350,7 @@ class MarketModel(Model):
         if keep_agents:
             for agent in self._agents.values():
                 agent.cash = agent.initial_cash
-                agent.position = 0.0
+                agent.positions = {c: 0.0 for c in agent.commodities}
                 agent._realized_pnl = 0.0
                 agent._trade_history.clear()
                 agent._filled_trades.clear()

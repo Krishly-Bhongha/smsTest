@@ -105,7 +105,7 @@ class VisualizationServer:
         return {
             "id": agent.unique_id,
             "cash": agent.cash,
-            "position": agent.position,
+            "positions": dict(agent.positions),
             "pnl": agent.total_pnl,
             "strategy": type(agent.strategy).__name__ if agent.strategy else "None",
         }

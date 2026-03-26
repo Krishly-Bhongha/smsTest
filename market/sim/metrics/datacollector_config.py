@@ -54,7 +54,7 @@ class MetricsDataCollector:
         """Get agent-level reporters."""
         return {
             "cash": lambda a: a.cash,
-            "position": lambda a: a.position,
+            "net_position": lambda a: sum(a.positions.values()),
             "realized_pnl": lambda a: a._realized_pnl,
             "unrealized_pnl": lambda a: a.unrealized_pnl,
             "total_pnl": lambda a: a.total_pnl,

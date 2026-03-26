@@ -39,7 +39,7 @@ class TradingAgent(MesaAgent):
         model: MarketModel,
         strategy: "Optional[Strategy]" = None,
         initial_cash: float = 10000.0,
-        commodity: str = "",
+        commodities: "Optional[List[str]]" = None,
         **kwargs,
     ):
         """Initialize the trading agent.
@@ -48,18 +48,18 @@ class TradingAgent(MesaAgent):
             model: The market model
             strategy: Trading strategy instance (optional)
             initial_cash: Starting cash balance
-            commodity: The commodity this agent trades
+            commodities: List of commodities this agent trades
             **kwargs: Additional arguments for Mesa Agent
         """
         super().__init__(model, **kwargs)
 
         # Commodity assignment
-        self.commodity: str = commodity
+        self.commodities: List[str] = list(commodities or [])
 
         # Portfolio state
         self.cash: float = initial_cash
         self.initial_cash: float = initial_cash
-        self.position: float = 0.0
+        self.positions: Dict[str, float] = {c: 0.0 for c in self.commodities}
 
         # Strategy
         self.strategy = strategy
@@ -74,14 +74,14 @@ class TradingAgent(MesaAgent):
         self.current_news: Optional[NewsEvent] = None
         self._news_history: List[NewsEvent] = []
 
-    def _mark_price(self) -> float:
-        """Return the best available price for marking the portfolio."""
+    def _mark_price(self, commodity: str) -> float:
+        """Return the best available price for marking a commodity position."""
         model = self.model
-        midprice = model.exchange.get_order_book(self.commodity).midprice
+        midprice = model.exchange.get_order_book(commodity).midprice
         if midprice is not None:
             return midprice
 
-        env = model.environments[self.commodity]
+        env = model.environments[commodity]
         env_state = env.get_state()
         return (
             env_state.get("fundamental")
@@ -91,20 +91,8 @@ class TradingAgent(MesaAgent):
 
     @property
     def unrealized_pnl(self) -> float:
-        """Calculate unrealized PnL based on current position and midprice."""
-        if self.position == 0:
-            return 0.0
-
-        model = self.model
-        midprice = model.exchange.get_order_book(self.commodity).midprice
-        if midprice is None:
-            return 0.0
-
-        # For long position: profit if price goes up
-        # For short position: profit if price goes down
-        # Average cost would need to be tracked for accurate calculation
-        # Using simplified version here
-        return 0.0  # TODO: Implement properly with avg cost basis
+        """Calculate unrealized PnL based on current positions and midprices."""
+        return 0.0  # TODO: Implement properly with avg cost basis per commodity
 
     @property
     def total_pnl(self) -> float:
@@ -113,8 +101,10 @@ class TradingAgent(MesaAgent):
 
     @property
     def equity(self) -> float:
-        """Total equity (cash + position value)."""
-        return self.cash + self.position * self._mark_price()
+        """Total equity (cash + value of all positions)."""
+        return self.cash + sum(
+            qty * self._mark_price(c) for c, qty in self.positions.items()
+        )
 
     @property
     def return_pct(self) -> float:
@@ -135,48 +125,46 @@ class TradingAgent(MesaAgent):
 
         self.strategy = strategy
 
-    def get_observation(self) -> "Observation":
-        """Build observation snapshot for the strategy.
+    def get_observations(self) -> "Dict[str, Observation]":
+        """Build observation snapshots for all traded commodities.
 
         Returns:
-            Observation with current market state
+            Dict mapping commodity name -> Observation
         """
         from .strategy_interface import Observation
 
         model: MarketModel = self.model
         exchange = model.exchange
+        observations = {}
 
-        # Get market state for this agent's commodity
-        market_state = exchange.get_market_state(self.commodity)
+        for commodity in self.commodities:
+            market_state = exchange.get_market_state(commodity)
+            depth = exchange.get_depth_snapshot(commodity)
+            env_state = model.environments[commodity].get_state()
+            reference_price = env_state.get("fundamental") or env_state.get("current_price")
 
-        # Get depth snapshot
-        depth = exchange.get_depth_snapshot(self.commodity)
+            last_trades = [
+                (t.price, t.quantity, t.timestamp)
+                for t in market_state.get("last_trades", [])
+            ]
 
-        # Get reference price from this commodity's environment
-        env_state = model.environments[self.commodity].get_state()
-        reference_price = env_state.get("fundamental") or env_state.get("current_price")
+            observations[commodity] = Observation(
+                tick=market_state["tick"],
+                commodity=commodity,
+                best_bid=market_state["best_bid"],
+                best_ask=market_state["best_ask"],
+                midprice=market_state["midprice"],
+                spread=market_state["spread"],
+                reference_price=reference_price,
+                last_trades=last_trades,
+                position=self.positions.get(commodity, 0.0),
+                cash=self.cash,
+                bid_depth=depth["bids"],
+                ask_depth=depth["asks"],
+                news=self.current_news,
+            )
 
-        # Build observation
-        last_trades = [
-            (t.price, t.quantity, t.timestamp)
-            for t in market_state.get("last_trades", [])
-        ]
-
-        return Observation(
-            tick=market_state["tick"],
-            commodity=self.commodity,
-            best_bid=market_state["best_bid"],
-            best_ask=market_state["best_ask"],
-            midprice=market_state["midprice"],
-            spread=market_state["spread"],
-            reference_price=reference_price,
-            last_trades=last_trades,
-            position=self.position,
-            cash=self.cash,
-            bid_depth=depth["bids"],
-            ask_depth=depth["asks"],
-            news=self.current_news,
-        )
+        return observations
 
     def receive_news(self, news: Optional[NewsEvent]) -> None:
         """Receive a structured news event from the main loop."""
@@ -198,12 +186,12 @@ class TradingAgent(MesaAgent):
         ):
             self.cancel_all_orders()
 
-        # Get observation after optional quote refresh.
-        observation = self.get_observation()
+        # Get observations after optional quote refresh.
+        observations = self.get_observations()
 
         # Ask strategy for orders
         if self.strategy is not None:
-            order_requests = self.strategy.act(observation)
+            order_requests = self.strategy.act(observations)
         else:
             order_requests = []
 
@@ -270,12 +258,15 @@ class TradingAgent(MesaAgent):
         """Apply a trade fill to this agent's portfolio and trade log."""
         self._filled_trades.append(trade)
 
+        commodity = trade.commodity
+        if commodity not in self.positions:
+            self.positions[commodity] = 0.0
         if side == Side.BID:
             self.cash -= trade.price * trade.quantity
-            self.position += trade.quantity
+            self.positions[commodity] += trade.quantity
         else:
             self.cash += trade.price * trade.quantity
-            self.position -= trade.quantity
+            self.positions[commodity] -= trade.quantity
 
         self._trade_history.append(
             {
@@ -307,12 +298,14 @@ class TradingAgent(MesaAgent):
         statuses = []
 
         for order_id in list(self._pending_orders.keys()):
+            pending = self._pending_orders.get(order_id)
+            order_commodity = pending.commodity if pending else (self.commodities[0] if self.commodities else "")
             cancel_order = model.exchange.create_order(
                 agent_id=self.unique_id,
                 side=Side.BID,  # Side doesn't matter for cancel
                 order_type=OrderType.CANCEL,
                 quantity=0,
-                commodity=self.commodity,
+                commodity=order_commodity,
             )
             cancel_order.order_id = order_id  # Set the order ID to cancel
 
@@ -330,9 +323,10 @@ class TradingAgent(MesaAgent):
         """
         return {
             "agent_id": self.unique_id,
-            "commodity": self.commodity,
+            "commodities": self.commodities,
             "cash": self.cash,
-            "position": self.position,
+            "positions": dict(self.positions),
+            "net_position": sum(self.positions.values()),
             "initial_cash": self.initial_cash,
             "realized_pnl": self._realized_pnl,
             "unrealized_pnl": self.unrealized_pnl,
@@ -347,9 +341,10 @@ class TradingAgent(MesaAgent):
         }
 
     def __repr__(self) -> str:
+        net_pos = sum(self.positions.values())
         return (
             f"TradingAgent(id={self.unique_id}, cash={self.cash:.2f}, "
-            f"position={self.position:.2f}, pnl={self.total_pnl:.2f})"
+            f"net_position={net_pos:.2f}, pnl={self.total_pnl:.2f})"
         )
 
 

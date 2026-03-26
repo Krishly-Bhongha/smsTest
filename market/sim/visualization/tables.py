@@ -149,7 +149,7 @@ class LeaderboardTable:
         for rank, agent in enumerate(leaderboard[: self.max_agents], 1):
             agent_id = agent.get("agent_id", "?")
             cash = agent.get("cash", 0)
-            position = agent.get("position", 0)
+            position = agent.get("net_position", 0)
             pnl = agent.get("total_pnl", 0)
             ret_pct = agent.get("return_pct", 0)
 

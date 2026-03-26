@@ -68,8 +68,7 @@ class SimulationRunner:
         )
 
         if self.config.agents:
-            for i, agent_config in enumerate(self.config.agents):
-                commodity = model.commodities[i % len(model.commodities)]
+            for agent_config in self.config.agents:
                 strategy_kwargs = dict(agent_config.strategy_params)
                 strategy_kwargs.setdefault("seed", model.random.randrange(2**32))
                 strategy = model.strategy_loader.create(
@@ -78,7 +77,6 @@ class SimulationRunner:
                 model.add_agent(
                     strategy=strategy,
                     initial_cash=agent_config.initial_cash,
-                    commodity=commodity,
                 )
             model._initialize_market()
 

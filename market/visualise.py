@@ -75,19 +75,17 @@ def create_model_from_config(config: Dict) -> MarketModel:
         commodity_configs=commodity_configs,
     )
 
-    # Add agents from config with round-robin commodity assignment
+    # Add agents from config (each agent trades all commodities)
     agent_configs = config.get("agents", {})
     strategy_loader = get_loader()
 
     total_agents = 0
-    agent_index = 0
     for strategy_name, agent_config in agent_configs.items():
         count = agent_config.get("count", 0)
         initial_cash = agent_config.get("initial_cash", 10000.0)
         strategy_params = agent_config.get("strategy_params", {})
 
         for _ in range(count):
-            commodity = model.commodities[agent_index % len(model.commodities)]
             strategy_kwargs = dict(strategy_params)
             strategy_kwargs.setdefault("seed", model.random.randrange(2**32))
             strategy = strategy_loader.create(strategy_name, **strategy_kwargs)
@@ -95,10 +93,8 @@ def create_model_from_config(config: Dict) -> MarketModel:
             model.add_agent(
                 strategy=strategy,
                 initial_cash=initial_cash,
-                commodity=commodity,
             )
             total_agents += 1
-            agent_index += 1
 
     # Seed all commodity order books with initial orders
     model._initialize_market()
