@@ -8,7 +8,7 @@
             "program": "${workspaceFolder}/sms/market/visualise.py",
             "cwd": "${workspaceFolder}/sms/market",
             "console": "integratedTerminal",
-            "args": ["WHEAT"]
+            "args": ["FOOD"]
         }
     ]
 }

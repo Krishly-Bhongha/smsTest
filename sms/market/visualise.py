@@ -39,6 +39,8 @@ from sim.visualization import (
     LeaderboardTable,
 )
 
+from testAgent import MyStrategy
+get_loader().register("my_strategy", MyStrategy)
 
 def load_config(config_path: str) -> Dict:
     """Load configuration from JSON file."""
@@ -498,6 +500,46 @@ def print_summary(model: MarketModel, market_history: List[Dict], commodity: Opt
     print(trade_table.format(trade_history))
     print("\n--- Leaderboard ---")
     print(leaderboard_table.format(leaderboard))
+
+    my_agents = [a for a in leaderboard if a.get("strategy_type") == "MyStrategy"]
+    if my_agents:
+        print("\n--- MyStrategy Agents ---")
+        for a in my_agents:
+            print(
+                f"  Agent {a['agent_id']}: "
+                f"equity={a['equity']:.2f}, "
+                f"pnl={a['total_pnl']:+.2f}, "
+                f"return={a['return_pct']:+.2f}%, "
+                f"trades={a['filled_trades']}"
+            )
+
+    # Per-commodity PnL breakdown
+    commodities = model.commodities
+    mark_prices = {
+        c: (model.exchange.get_order_book(c).midprice or model.environments[c].get_state().get("fundamental") or model.environments[c].initial_price)
+        for c in commodities
+    }
+
+    col_w = 14
+    header = f"{'Agent':>6} | {'Strategy':<20} | {'Cash':>12}"
+    for c in commodities:
+        header += f" | {c:>{col_w}}"
+    header += f" | {'Total PnL':>12}"
+    print(f"\n--- PnL by Commodity ---")
+    print(header)
+    print("-" * len(header))
+
+    for agent in sorted(model.get_agent_metrics(), key=lambda a: a["total_pnl"], reverse=True):
+        positions = agent.get("positions", {})
+        strategy = (agent.get("strategy_type") or "?")[:20]
+        row = f"{agent['agent_id']:>6} | {strategy:<20} | {agent['cash']:>12.2f}"
+        for c in commodities:
+            pos = positions.get(c, 0.0)
+            mark_val = pos * mark_prices[c]
+            cell = f"{pos:+.1f} (${mark_val:+.0f})"
+            row += f" | {cell:>{col_w}}"
+        row += f" | {agent['total_pnl']:>+12.2f}"
+        print(row)
 
 
 def main():

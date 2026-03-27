@@ -1,4 +1,8 @@
+import sys
 import unittest
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from visualise import create_model_from_config, load_config, trade_to_dict
 from visualise import run_simulation as run_visual_simulation
@@ -9,17 +13,24 @@ from sim.metrics.datacollector_config import MetricsDataCollector
 from sim.runtime.config import SimulationConfig
 from sim.runtime.simulation_runner import SimulationRunner, run_simulation
 
+COMMODITY = "TEST"
+
 
 class MatchingEngineTests(unittest.TestCase):
-    def test_limit_order_partial_fill_respects_taker_quantity(self):
-        engine = MatchingEngine()
+    def _engine(self):
+        engine = MatchingEngine([COMMODITY])
         engine.next_tick()
+        return engine
+
+    def test_limit_order_partial_fill_respects_taker_quantity(self):
+        engine = self._engine()
 
         ask = engine.create_order(
             agent_id=1,
             side=Side.ASK,
             order_type=OrderType.LIMIT,
             quantity=10.0,
+            commodity=COMMODITY,
             price=101.0,
         )
         engine.submit_order(ask)
@@ -29,6 +40,7 @@ class MatchingEngineTests(unittest.TestCase):
             side=Side.BID,
             order_type=OrderType.LIMIT,
             quantity=3.0,
+            commodity=COMMODITY,
             price=105.0,
         )
         status = engine.submit_order(bid)
@@ -37,17 +49,17 @@ class MatchingEngineTests(unittest.TestCase):
         self.assertEqual(status.remaining_quantity, 0.0)
         self.assertEqual(len(status.trades), 1)
         self.assertEqual(status.trades[0].quantity, 3.0)
-        self.assertEqual(engine.order_book.get_total_volume(Side.ASK), 7.0)
+        self.assertEqual(engine.get_order_book(COMMODITY).get_total_volume(Side.ASK), 7.0)
 
     def test_trade_to_dict_carries_aggressor_side_for_order_flow(self):
-        engine = MatchingEngine()
-        engine.next_tick()
+        engine = self._engine()
 
         ask = engine.create_order(
             agent_id=1,
             side=Side.ASK,
             order_type=OrderType.LIMIT,
             quantity=5.0,
+            commodity=COMMODITY,
             price=101.0,
         )
         engine.submit_order(ask)
@@ -57,6 +69,7 @@ class MatchingEngineTests(unittest.TestCase):
             side=Side.BID,
             order_type=OrderType.MARKET,
             quantity=5.0,
+            commodity=COMMODITY,
         )
         status = engine.submit_order(bid)
 
@@ -71,13 +84,15 @@ class MatchingEngineTests(unittest.TestCase):
 
 class BootstrapAndConfigTests(unittest.TestCase):
     def test_create_model_from_config_does_not_leave_orphan_orders(self):
-        config = load_config("config.json")
+        config = load_config(str(Path(__file__).parent.parent / "config.json"))
         model = create_model_from_config(config)
 
         active_ids = set(model._agents)
-        book_agent_ids = {
-            order.agent_id for order in model.exchange.order_book._orders_by_id.values()
-        }
+        book_agent_ids = set()
+        for ob in model.exchange.order_books.values():
+            book_agent_ids.update(
+                order.agent_id for order in ob._orders_by_id.values()
+            )
 
         self.assertTrue(book_agent_ids)
         self.assertTrue(book_agent_ids.issubset(active_ids))
@@ -153,34 +168,35 @@ class HelperApiTests(unittest.TestCase):
 
 class BehaviorRegressionTests(unittest.TestCase):
     def test_configured_market_has_broad_participation_and_bounded_book(self):
-        config = load_config("config.json")
+        config = load_config(str(Path(__file__).parent.parent / "config.json"))
         model = create_model_from_config(config)
         history = run_visual_simulation(model, 120)
 
+        # Every agent that was active should have made at least one trade
         strategy_groups = {}
         for agent in model.agents:
             state = agent.get_state()
             strategy_groups.setdefault(state["strategy_type"], []).append(state)
 
-        self.assertEqual(
-            {
-                name: sum(1 for row in rows if row["filled_trades"] == 0)
-                for name, rows in strategy_groups.items()
-            },
-            {
-                "MarketMakerStrategy": 0,
-                "LiquidityTakerStrategy": 0,
-                "LiquidityMakerStrategy": 0,
-                "RandomTraderStrategy": 0,
-            },
-        )
+        idle_by_strategy = {
+            name: sum(1 for row in rows if row["filled_trades"] == 0)
+            for name, rows in strategy_groups.items()
+        }
+        for strategy_type, idle_count in idle_by_strategy.items():
+            self.assertEqual(
+                idle_count, 0,
+                msg=f"{strategy_type} had {idle_count} agent(s) with zero trades"
+            )
 
+        # Price should move meaningfully
         midprices = [
             round(state["midprice"], 4)
             for state in history
             if state.get("midprice") is not None
         ]
         self.assertGreater(len(set(midprices)), 10)
+
+        # Order book shouldn't grow unbounded
         self.assertLess(history[-1]["order_count"], 100)
 
 

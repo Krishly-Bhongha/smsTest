@@ -103,6 +103,11 @@ class MarketModel(Model):
         self.strategy_loader = get_loader()
 
         # Per-commodity market environments
+        self._commodity_volatilities: Dict[str, float] = {
+            c["name"]: c.get("volatility", 0.1)
+            for c in self._commodity_configs
+        }
+
         self.environments: Dict[str, MarketEnvironment] = {
             c: MarketEnvironment(
                 initial_price=self._commodity_prices[c],
@@ -110,6 +115,7 @@ class MarketModel(Model):
                 enable_fundamentals=enable_fundamentals,
                 enable_regimes=enable_regimes,
                 regime_change_prob=regime_change_prob,
+                base_volatility=self._commodity_volatilities[c],
             )
             for c in self.commodities
         }

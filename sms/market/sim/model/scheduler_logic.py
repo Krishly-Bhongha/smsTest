@@ -53,6 +53,7 @@ class MarketEnvironment:
         enable_fundamentals: bool = False,
         enable_regimes: bool = False,
         regime_change_prob: float = 0.05,
+        base_volatility: float = 0.1,
     ):
         """Initialize market environment.
 
@@ -69,6 +70,7 @@ class MarketEnvironment:
         self.enable_fundamentals = enable_fundamentals
         self.enable_regimes = enable_regimes
         self.regime_change_prob = regime_change_prob
+        self.base_volatility = base_volatility
 
         # Fundamental value
         self.fundamental = initial_price
@@ -105,7 +107,7 @@ class MarketEnvironment:
 
         # Update fundamental value (random walk)
         if self.enable_fundamentals:
-            noise = self._rng.gauss(0, 0.1)
+            noise = self._rng.gauss(0, self.base_volatility)
             self.fundamental += noise
 
         # Regime switching
@@ -116,7 +118,7 @@ class MarketEnvironment:
         # Apply regime effects to price
         drift = self._current_regime.drift
         volatility = self._current_regime.volatility
-        noise = self._rng.gauss(0, 0.1 * volatility)
+        noise = self._rng.gauss(0, self.base_volatility * volatility)
 
         self.current_price += drift + noise
 
